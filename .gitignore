@@ -1,0 +1,19 @@
+# raw/derived data - reproducible via scripts, not versioned
+data/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# experiment tracking / misc
+wandb/
+*.log.tmp
+.ipynb_checkpoints/
+
+# OS junk
+.DS_Store
+Thumbs.db
