@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=kws-train
 #SBATCH --partition=bigbatch
-#SBATCH --output=/home-mscluster/%u/voice-kws/logs/train-%x-%j.out
-#SBATCH --error=/home-mscluster/%u/voice-kws/logs/train-%x-%j.err
+#SBATCH --output=/home-mscluster/%u/voice_command_pipeline_latency/logs/train-%x-%j.out
+#SBATCH --error=/home-mscluster/%u/voice_command_pipeline_latency/logs/train-%x-%j.err
 
 sleep 20
 
@@ -22,19 +22,8 @@ cd $SLURM_SUBMIT_DIR
 mkdir -p logs checkpoints results
 
 source /etc/profile.d/lmod.sh
-module load pytorch/2026-02-24
+module load anaconda/anaconda-2025-12-2
 
-# --- args below map to your KWS sweep: architecture + b value ---
-python src/train_kws.py \
-    --arch "$ARCH" \
-    --b "$B_VALUE" \
-    --data ~/voice-kws/data/speech_commands \
-    --checkpoint-dir ~/voice-kws/checkpoints \
-    --results-dir ~/voice-kws/results
+conda run -n kws python -c "import torch; print('torch:', torch.__version__, '| cuda available:', torch.cuda.is_available())"
 
-# --- auto commit + push results so your laptop stays in sync ---
-cd $SLURM_SUBMIT_DIR
-bash scripts/precommit-check.sh
-git add checkpoints/ logs/ results/
-git commit -m "Auto-commit: ${SLURM_JOB_NAME} job ${SLURM_JOB_ID} (arch=${ARCH}, b=${B_VALUE})"
-git push
+conda run -n kws python src/data.py --data ~/voice_command_pipeline_latency/data

@@ -1,0 +1,13 @@
+=== Useful Debugging Information ===
+Date: Sat Aug 1 05:12:45 PM UTC 2026
+Username: pledwaba
+Job ID: 23500
+Job Name: env-test
+Home Directory: /home-mscluster/pledwaba
+Node: mscluster52
+Current Working Directory: /home-mscluster/pledwaba/voice_command_pipeline_latency
+Number of Nodes: 1
+List of Nodes: mscluster52
+======
+torch: 2.5.1+cu121 | cuda available: False
+
