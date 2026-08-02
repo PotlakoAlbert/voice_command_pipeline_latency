@@ -38,15 +38,19 @@ class SpeechCommandsDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self._base)
 
-    def _pcen(self, mel_spec):
-        return torchaudio.functional.pcen(
-            mel_spec,
-            smooth=0.025,
-            gain=0.98,
-            bias=2.0,
-            power=0.5,
-            eps=1e-6,
-        )
+    def _pcen(self, mel_spec, smooth=0.025, gain=0.98, bias=2.0, power=0.5, eps=1e-6):
+        # Manual PCEN implementation (torchaudio.functional.pcen is not
+        # available in this torchaudio version). Follows Wang et al. 2017
+        # "Trainable Frontend for Robust and Far-Field Keyword Spotting",
+        # the standard reference for PCEN in the KWS literature.
+        mel_spec = mel_spec + eps
+        # Exponential moving average smoother, applied along the time axis.
+        smoother = torch.zeros_like(mel_spec)
+        smoother[..., 0] = mel_spec[..., 0]
+        for t in range(1, mel_spec.shape[-1]):
+            smoother[..., t] = (1 - smooth) * smoother[..., t - 1] + smooth * mel_spec[..., t]
+        agc = mel_spec / (smoother + eps) ** gain
+        return (agc + bias) ** power - bias ** power
 
     def _fix_length(self, waveform):
         length = waveform.shape[-1]

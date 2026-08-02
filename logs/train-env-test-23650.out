@@ -1,0 +1,18 @@
+=== Useful Debugging Information ===
+Date: Sun Aug 2 11:40:27 AM UTC 2026
+Username: pledwaba
+Job ID: 23650
+Job Name: env-test
+Home Directory: /home-mscluster/pledwaba
+Node: mscluster82
+Current Working Directory: /home-mscluster/pledwaba/voice_command_pipeline_latency
+Number of Nodes: 1
+List of Nodes: mscluster82
+======
+torch: 2.5.1+cu121 | cuda available: False
+
+Classes (12): ['yes', 'no', 'up', 'down', 'left', 'right', 'on', 'off', 'stop', 'go', '_silence_', '_unknown_']
+Train batches: 10606
+Val batches:   1248
+Test batches:  1376
+
