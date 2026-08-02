@@ -45,3 +45,8 @@ print('device count:', torch.cuda.device_count())
 "
 ls -la /dev/nvidia* 2>&1
 echo "======"
+
+echo "=== libcuda search ==="
+find / -name "libcuda.so*" 2>/dev/null
+ldconfig -p | grep -i cuda
+echo "======"
