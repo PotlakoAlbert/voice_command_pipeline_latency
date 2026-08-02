@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=kws-train
-#SBATCH --partition=bigbatch
+#SBATCH --partition=biggpu
+#SBATCH --gres=gpu:1
 #SBATCH --output=/home-mscluster/%u/voice_command_pipeline_latency/logs/train-%x-%j.out
 #SBATCH --error=/home-mscluster/%u/voice_command_pipeline_latency/logs/train-%x-%j.err
 
