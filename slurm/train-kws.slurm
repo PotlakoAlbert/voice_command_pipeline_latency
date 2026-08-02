@@ -28,3 +28,19 @@ module load anaconda/anaconda-2025-12-2
 conda run -n kws python -c "import torch; print('torch:', torch.__version__, '| cuda available:', torch.cuda.is_available(), '| device count:', torch.cuda.device_count())"
 
 conda run -n kws python src/data.py --data ~/voice_command_pipeline_latency/data
+
+echo "=== Extra CUDA Diagnostics ==="
+echo "CUDA_VISIBLE_DEVICES: '$CUDA_VISIBLE_DEVICES'"
+echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+conda run -n kws python -c "
+import torch
+print('torch cuda build version:', torch.version.cuda)
+try:
+    torch.cuda.init()
+    print('cuda.init() succeeded')
+except Exception as e:
+    print('cuda.init() FAILED:', repr(e))
+print('device count:', torch.cuda.device_count())
+"
+ls -la /dev/nvidia* 2>&1
+echo "======"
