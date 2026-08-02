@@ -25,6 +25,7 @@ echo "======"
 source /etc/profile.d/lmod.sh
 module load anaconda/anaconda-2025-12-2
 export CUDA_VISIBLE_DEVICES=0
+export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 
 conda run -n kws python -c "import torch; print('torch:', torch.__version__, '| cuda available:', torch.cuda.is_available(), '| device count:', torch.cuda.device_count())"
 
