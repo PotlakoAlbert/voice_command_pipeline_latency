@@ -1,3 +1,0 @@
-python: can't open file '/home-mscluster/pledwaba/voice_command_pipeline_latency/src/data.py': [Errno 2] No such file or directory
-
-ERROR conda.cli.main_run:execute(127): `conda run python src/data.py --data /home-mscluster/pledwaba/voice_command_pipeline_latency/data` failed. (See above for error)
