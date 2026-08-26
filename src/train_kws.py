@@ -4,19 +4,16 @@ train_kws.py
 Phase 1 baseline trainer for KWS architectures (CRNN, Dilated ResNet).
 
 Trains a single architecture with standard cross-entropy loss on the
-12-class Speech Commands task (Warden 2018) and reports Top-One accuracy,
-matching the Phase 1 schedule task: "Train and evaluate CRNN and dilated
-ResNet baselines... confirm Streaming Error rates match published figures."
+12-class Speech Commands task (Warden 2018) and reports Top-One accuracy.
 
-NOTE on --b: the Jose et al. [2022] latency-control mechanism and the
-max-pooling loss of Sun et al. [2016] both require frame-level logits
-(a prediction per time step), but the current CRNN/DilatedResNet models
-mean-/average-pool over time before classifying, giving only an
-utterance-level prediction. This is sufficient for Phase 1's standard
-accuracy baselines. The --b flag is accepted here (to match the slurm
-script's interface and keep sweep scripts stable across phases) but has
-no effect yet — implementing it requires adding a frame-level output
-head to both architectures, planned for Phase 2 (methodology 4.4).
+Includes wandb (offline mode) logging and early stopping to avoid
+under- or over-training: training halts once validation accuracy shows
+no improvement for `--patience` epochs, restoring confidence that the
+saved checkpoint reflects the model's actual convergence point.
+
+NOTE on --b: the Jose et al. [2022] latency-control mechanism requires
+frame-level logits; current models only produce utterance-level output.
+--b is accepted for CLI compatibility but has no effect yet (Phase 2 work).
 """
 
 import os
@@ -26,6 +23,7 @@ import time
 
 import torch
 import torch.nn as nn
+import wandb
 
 from data import get_dataloaders, LABEL_LIST
 from models import CRNN, DilatedResNet, count_parameters
@@ -57,6 +55,7 @@ def evaluate(model, loader, device):
 def train_one_epoch(model, loader, optimizer, loss_fn, device, log_every=100):
     model.train()
     running = 0.0
+    epoch_loss_total = 0.0
     for i, (feat, label) in enumerate(loader, start=1):
         feat, label = feat.to(device), label.to(device)
 
@@ -67,23 +66,26 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device, log_every=100):
         optimizer.step()
 
         running += loss.item()
+        epoch_loss_total += loss.item()
         if i % log_every == 0:
             avg = running / log_every
             print(f"  step {i:5d}/{len(loader)}  loss {avg:.4f}")
             running = 0.0
+
+    return epoch_loss_total / len(loader)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arch", required=True, choices=["crnn", "dilated_resnet"])
     ap.add_argument("--b", type=float, default=0.0,
-                     help="Jose et al. latency-control param. Not yet implemented "
-                          "(requires frame-level head, planned Phase 2). Accepted "
-                          "for slurm script compatibility.")
+                     help="Jose et al. latency-control param. Not yet implemented.")
     ap.add_argument("--data", required=True)
     ap.add_argument("--checkpoint-dir", required=True)
     ap.add_argument("--results-dir", required=True)
     ap.add_argument("--epochs", type=int, default=10)
+    ap.add_argument("--patience", type=int, default=5,
+                     help="Stop if val accuracy doesn't improve for this many epochs")
     ap.add_argument("--batch-size", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--num-workers", type=int, default=2)
@@ -92,14 +94,23 @@ def main():
 
     if args.b != 0.0:
         print(f"WARNING: --b={args.b} was passed but latency-control is not yet "
-              f"implemented (see module docstring). Training will proceed with "
-              f"standard cross-entropy loss, equivalent to b=0.")
+              f"implemented. Training will proceed with standard cross-entropy loss.")
 
     use_cuda = (not args.no_cuda) and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
 
     print(f"Architecture: {args.arch}")
     print(f"torch: {torch.__version__} | device: {device}")
+
+    os.environ["WANDB_MODE"] = "offline"
+    wandb.init(
+        project="voice-kws-phase1",
+        name=f"{args.arch}_b{args.b}",
+        config={
+            "arch": args.arch, "b": args.b, "epochs": args.epochs,
+            "batch_size": args.batch_size, "lr": args.lr, "patience": args.patience,
+        },
+    )
 
     train_loader, val_loader, test_loader, labels = get_dataloaders(
         root=args.data, batch_size=args.batch_size, num_workers=args.num_workers,
@@ -119,19 +130,24 @@ def main():
 
     history = []
     best_val_acc = 0.0
+    epochs_without_improvement = 0
     start_time = time.time()
+    final_epoch = args.epochs
 
     for epoch in range(1, args.epochs + 1):
         print(f"\nEpoch {epoch}/{args.epochs}")
-        train_one_epoch(model, train_loader, optimizer, loss_fn, device)
+        avg_train_loss = train_one_epoch(model, train_loader, optimizer, loss_fn, device)
 
         val_acc = evaluate(model, val_loader, device)
         print(f"  val accuracy: {val_acc:.2f}%")
 
-        history.append({"epoch": epoch, "val_accuracy": val_acc})
+        wandb.log({"epoch": epoch, "train_loss": avg_train_loss, "val_accuracy": val_acc})
+
+        history.append({"epoch": epoch, "val_accuracy": val_acc, "train_loss": avg_train_loss})
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
+            epochs_without_improvement = 0
             ckpt_path = os.path.join(
                 args.checkpoint_dir, f"{args.arch}_b{args.b}_best.pt"
             )
@@ -144,6 +160,16 @@ def main():
                 "n_params": n_params,
             }, ckpt_path)
             print(f"  saved new best checkpoint: {ckpt_path}")
+        else:
+            epochs_without_improvement += 1
+
+        if epochs_without_improvement >= args.patience:
+            print(f"\nEarly stopping: no improvement for {args.patience} epochs "
+                  f"(best val accuracy: {best_val_acc:.2f}% at epoch {epoch - epochs_without_improvement})")
+            final_epoch = epoch
+            break
+
+    wandb.finish()
 
     test_acc = evaluate(model, test_loader, device)
     elapsed = time.time() - start_time
@@ -154,7 +180,8 @@ def main():
         "arch": args.arch,
         "b": args.b,
         "n_params": n_params,
-        "epochs": args.epochs,
+        "epochs_requested": args.epochs,
+        "epochs_run": final_epoch,
         "best_val_accuracy": best_val_acc,
         "test_accuracy": test_acc,
         "training_time_seconds": elapsed,
