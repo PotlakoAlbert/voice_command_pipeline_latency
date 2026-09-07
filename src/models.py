@@ -68,6 +68,17 @@ class CRNN(nn.Module):
 
         logits = self.classifier(x)
         return logits
+    def forward_frames(self, x):
+        """Per-timestep posteriors for Jose et al. latency-control loss.
+        Returns (batch, time, n_classes) instead of pooling over time."""
+        x = x.unsqueeze(1)
+        x = self.conv(x)
+        batch, channels, freq, time = x.shape
+        x = x.permute(0, 3, 1, 2)
+        x = x.reshape(batch, time, channels * freq)
+        x, _ = self.gru(x)
+        logits = self.classifier(x)  # (batch, time, n_classes)
+        return logits
 
 
 class DilatedResidualBlock(nn.Module):
@@ -121,6 +132,18 @@ class DilatedResNet(nn.Module):
         x = x.flatten(1)
         logits = self.classifier(x)
         return logits
+    def forward_frames(self, x):
+        """Per-timestep posteriors: pool over frequency only, keep time."""
+        x = x.unsqueeze(1)
+        x = self.relu(self.input_bn(self.input_conv(x)))
+        for block in self.blocks:
+            x = block(x)
+        # x: (batch, channels, freq, time) -> pool freq only
+        x = x.mean(dim=2)          # (batch, channels, time)
+        x = x.permute(0, 2, 1)     # (batch, time, channels)
+        logits = self.classifier(x)  # (batch, time, n_classes)
+        return logits
+
 
 
 def count_parameters(model):
