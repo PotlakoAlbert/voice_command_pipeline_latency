@@ -1,19 +1,20 @@
 """
 train_kws.py
 
-Phase 1 baseline trainer for KWS architectures (CRNN, Dilated ResNet).
+Trainer for KWS architectures (CRNN, Dilated ResNet).
 
-Trains a single architecture with standard cross-entropy loss on the
-12-class Speech Commands task (Warden 2018) and reports Top-One accuracy.
+For --b 0.0 (default): standard cross-entropy on utterance-level output
+(model.forward()), exactly matching the Phase 1 baseline training path —
+untouched for reproducibility.
+
+For --b > 0.0: Phase 2 latency-control training. Uses per-timestep
+posteriors (model.forward_frames()) with the Jose et al. [2022]
+Bernoulli-shifted max-pooling loss (src/latency_loss.py), pushing the
+model to fire earlier in the keyword window at some accuracy cost.
 
 Includes wandb (offline mode) logging and early stopping to avoid
 under- or over-training: training halts once validation accuracy shows
-no improvement for `--patience` epochs, restoring confidence that the
-saved checkpoint reflects the model's actual convergence point.
-
-NOTE on --b: the Jose et al. [2022] latency-control mechanism requires
-frame-level logits; current models only produce utterance-level output.
---b is accepted for CLI compatibility but has no effect yet (Phase 2 work).
+no improvement for `--patience` epochs.
 """
 
 import os
@@ -27,6 +28,7 @@ import wandb
 
 from data import get_dataloaders, LABEL_LIST
 from models import CRNN, DilatedResNet, count_parameters
+from latency_loss import latency_controlled_loss
 
 
 def build_model(arch, n_mels=40, n_classes=12):
@@ -40,6 +42,9 @@ def build_model(arch, n_mels=40, n_classes=12):
 
 @torch.no_grad()
 def evaluate(model, loader, device):
+    """Always evaluates via the pooled forward() path (utterance-level
+    accuracy), regardless of which loss trained the model. This keeps
+    Top-One accuracy comparable across b values."""
     model.eval()
     correct = 0
     total = 0
@@ -52,7 +57,7 @@ def evaluate(model, loader, device):
     return 100.0 * correct / total
 
 
-def train_one_epoch(model, loader, optimizer, loss_fn, device, log_every=100):
+def train_one_epoch(model, loader, optimizer, device, b, log_every=100):
     model.train()
     running = 0.0
     epoch_loss_total = 0.0
@@ -60,8 +65,14 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device, log_every=100):
         feat, label = feat.to(device), label.to(device)
 
         optimizer.zero_grad(set_to_none=True)
-        logits = model(feat)
-        loss = loss_fn(logits, label)
+
+        if b == 0.0:
+            logits = model(feat)
+            loss = nn.functional.cross_entropy(logits, label)
+        else:
+            frame_logits = model.forward_frames(feat)
+            loss = latency_controlled_loss(frame_logits, label, b=b)
+
         loss.backward()
         optimizer.step()
 
@@ -79,7 +90,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arch", required=True, choices=["crnn", "dilated_resnet"])
     ap.add_argument("--b", type=float, default=0.0,
-                     help="Jose et al. latency-control param. Not yet implemented.")
+                     help="Jose et al. latency-control param. b=0.0 -> standard "
+                          "cross-entropy baseline. b>0.0 -> latency-controlled "
+                          "max-pooling loss via forward_frames().")
     ap.add_argument("--data", required=True)
     ap.add_argument("--checkpoint-dir", required=True)
     ap.add_argument("--results-dir", required=True)
@@ -92,19 +105,15 @@ def main():
     ap.add_argument("--no-cuda", action="store_true")
     args = ap.parse_args()
 
-    if args.b != 0.0:
-        print(f"WARNING: --b={args.b} was passed but latency-control is not yet "
-              f"implemented. Training will proceed with standard cross-entropy loss.")
-
     use_cuda = (not args.no_cuda) and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
 
-    print(f"Architecture: {args.arch}")
+    print(f"Architecture: {args.arch} | b={args.b}")
     print(f"torch: {torch.__version__} | device: {device}")
 
     os.environ["WANDB_MODE"] = "offline"
     wandb.init(
-        project="voice-kws-phase1",
+        project="voice-kws-phase2" if args.b != 0.0 else "voice-kws-phase1",
         name=f"{args.arch}_b{args.b}",
         config={
             "arch": args.arch, "b": args.b, "epochs": args.epochs,
@@ -123,7 +132,6 @@ def main():
     print(f"Model parameters: {n_params:,}")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    loss_fn = nn.CrossEntropyLoss()
 
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     os.makedirs(args.results_dir, exist_ok=True)
@@ -136,7 +144,7 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         print(f"\nEpoch {epoch}/{args.epochs}")
-        avg_train_loss = train_one_epoch(model, train_loader, optimizer, loss_fn, device)
+        avg_train_loss = train_one_epoch(model, train_loader, optimizer, device, b=args.b)
 
         val_acc = evaluate(model, val_loader, device)
         print(f"  val accuracy: {val_acc:.2f}%")

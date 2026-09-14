@@ -20,6 +20,9 @@ true endpoint. b=0 recovers standard max-pooling loss exactly.
 
 Expects model output from `forward_frames()`: logits of shape
 (batch, time, n_classes).
+
+Vectorized across the batch dimension (no per-example Python loop) for
+GPU throughput.
 """
 
 import torch
@@ -27,7 +30,7 @@ import torch.nn.functional as F
 
 # Matches LABEL_LIST in data.py: TARGET_LABELS + [SILENCE_LABEL, UNKNOWN_LABEL]
 # Indices 0-9 are real keywords, 10-11 are negative classes.
-NEGATIVE_CLASS_INDICES = {10, 11}
+NEGATIVE_CLASS_INDICES = (10, 11)
 
 
 def latency_controlled_loss(logits, labels, b=0.0):
@@ -45,24 +48,31 @@ def latency_controlled_loss(logits, labels, b=0.0):
         scalar loss (mean over batch).
     """
     batch, time, n_classes = logits.shape
+    device = logits.device
     log_probs = F.log_softmax(logits, dim=-1)  # (batch, time, n_classes)
 
-    losses = []
-    for i in range(batch):
-        y = labels[i].item()
-        lp = log_probs[i]  # (time, n_classes)
+    # Posteriors for each example's own true class, at every frame: (batch, time)
+    batch_idx = torch.arange(batch, device=device)
+    class_log_probs = log_probs[batch_idx.unsqueeze(1), :, labels.unsqueeze(1)]
+    # class_log_probs shape: (batch, time) after squeeze
+    if class_log_probs.dim() == 3:
+        class_log_probs = class_log_probs.squeeze(1)
 
-        if y in NEGATIVE_CLASS_INDICES:
-            # Negative example: pick the hardest frame to reject
-            # (min posterior for the true negative class).
-            t = torch.argmin(lp[:, y]).item()
-        else:
-            # Positive example (real keyword): frame with max posterior
-            # for the true class, optionally shifted earlier by Bernoulli(b).
-            t_max = torch.argmax(lp[:, y]).item()
-            beta = int(torch.bernoulli(torch.tensor(float(b))).item())
-            t = max(t_max - beta, 0)
+    is_negative = torch.zeros(batch, dtype=torch.bool, device=device)
+    for neg_idx in NEGATIVE_CLASS_INDICES:
+        is_negative |= (labels == neg_idx)
+    is_positive = ~is_negative
 
-        losses.append(-lp[t, y])
+    t_max = torch.argmax(class_log_probs, dim=1)   # (batch,) best frame per example
+    t_min = torch.argmin(class_log_probs, dim=1)   # (batch,) worst frame per example
 
-    return torch.stack(losses).mean()
+    # Bernoulli shift, only applied where relevant (positives)
+    beta = torch.bernoulli(torch.full((batch,), float(b), device=device)).long()
+    t_pos = torch.clamp(t_max - beta, min=0)
+
+    # Select final frame index per example: negatives use t_min, positives use t_pos
+    t = torch.where(is_negative, t_min, t_pos)
+
+    selected_log_probs = class_log_probs[batch_idx, t]  # (batch,)
+    loss = -selected_log_probs.mean()
+    return loss
