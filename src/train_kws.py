@@ -41,16 +41,25 @@ def build_model(arch, n_mels=40, n_classes=12):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device):
-    """Always evaluates via the pooled forward() path (utterance-level
-    accuracy), regardless of which loss trained the model. This keeps
-    Top-One accuracy comparable across b values."""
+def evaluate(model, loader, device, b=0.0):
+    """For b=0.0 (baseline): evaluates via the pooled forward() path,
+    matching how the model was trained (whole-clip cross-entropy).
+
+    For b>0.0: the model was trained via forward_frames() with a
+    max-pooling-style loss, so evaluation must match that convention:
+    take the per-class max posterior across frames (max-pooling
+    inference), not the pooled-hidden-state forward() path, which was
+    never optimized for and collapses to majority-class prediction."""
     model.eval()
     correct = 0
     total = 0
     for feat, label in loader:
         feat, label = feat.to(device), label.to(device)
-        logits = model(feat)
+        if b == 0.0:
+            logits = model(feat)
+        else:
+            frame_logits = model.forward_frames(feat)  # (batch, time, n_classes)
+            logits, _ = frame_logits.max(dim=1)  # max-pool over time per class
         pred = logits.argmax(dim=1)
         correct += (pred == label).sum().item()
         total += label.numel()
@@ -146,7 +155,7 @@ def main():
         print(f"\nEpoch {epoch}/{args.epochs}")
         avg_train_loss = train_one_epoch(model, train_loader, optimizer, device, b=args.b)
 
-        val_acc = evaluate(model, val_loader, device)
+        val_acc = evaluate(model, val_loader, device, b=args.b)
         print(f"  val accuracy: {val_acc:.2f}%")
 
         wandb.log({"epoch": epoch, "train_loss": avg_train_loss, "val_accuracy": val_acc})
@@ -179,7 +188,7 @@ def main():
 
     wandb.finish()
 
-    test_acc = evaluate(model, test_loader, device)
+    test_acc = evaluate(model, test_loader, device, b=args.b)
     elapsed = time.time() - start_time
     print(f"\nFinal test accuracy: {test_acc:.2f}%")
     print(f"Total training time: {elapsed:.1f}s")
