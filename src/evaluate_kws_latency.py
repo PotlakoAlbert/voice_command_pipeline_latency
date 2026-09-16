@@ -16,7 +16,7 @@ def pcen(mel_spec, smooth=0.025, gain=0.98, bias=2.0, power=0.5, eps=1e-6):
     agc = mel_spec / (smoother + eps) ** gain
     return (agc + bias) ** power - bias ** power
 
-def sliding_window_detection(model, audio_path, device, keyword_label, threshold=0.5, window_sec=1.0, hop_sec=0.1):
+def sliding_window_detection(model, audio_path, device, keyword_label, threshold=0.5, window_sec=1.0, hop_sec=0.1, b=0.0):
     waveform, sr = torchaudio.load(audio_path)
     if sr != 16000:
         resampler = torchaudio.transforms.Resample(sr, 16000)
@@ -33,7 +33,14 @@ def sliding_window_detection(model, audio_path, device, keyword_label, threshold
         mel = mel_transform(segment.unsqueeze(0))
         feat = pcen(mel).squeeze(0).unsqueeze(0).to(device)
         with torch.no_grad():
-            out = model(feat)
+            if b == 0.0:
+                out = model(feat)
+            else:
+                # b>0 checkpoints were trained via forward_frames() with a
+                # max-pooling-style loss; match that convention at inference
+                # by max-pooling per-class posteriors over the window's frames.
+                frame_out = model.forward_frames(feat)  # (1, time, n_classes)
+                out, _ = frame_out.max(dim=1)  # (1, n_classes)
             prob = torch.softmax(out, dim=1)
             # Check probability of the target label only
             conf = prob[0, target_idx].item()
@@ -48,6 +55,8 @@ def main():
     parser.add_argument('--arch', choices=['crnn', 'dilated_resnet'], required=True)
     parser.add_argument('--checkpoint', required=True)
     parser.add_argument('--threshold', type=float, default=0.5)
+    parser.add_argument('--b', type=float, default=0.0,
+                         help='b value the checkpoint was trained with; determines inference path (forward vs forward_frames).')
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
 
@@ -77,7 +86,7 @@ def main():
         gt_onset = words[1][0]  # second word start
         keyword_label = words[1][2]  # the actual keyword word
         audio_path = Path('/home-mscluster/pledwaba/voice_command_pipeline_latency/data/streaming_eval/audio') / entry['filename']
-        det_time, conf = sliding_window_detection(model, audio_path, device, keyword_label, threshold=args.threshold)
+        det_time, conf = sliding_window_detection(model, audio_path, device, keyword_label, threshold=args.threshold, b=args.b)
         latency = det_time - gt_onset if det_time is not None else None
         results.append({
             'stream_id': stream_id,
@@ -88,7 +97,7 @@ def main():
             'confidence': conf,
             'threshold': args.threshold
         })
-    json.dump(results, open(args.output, 'w'), indent=2)
+    json.dump({'b': args.b, 'arch': args.arch, 'threshold': args.threshold, 'results': results}, open(args.output, 'w'), indent=2)
     detected = [r for r in results if r['detection_time'] is not None]
     if detected:
         latencies = [r['latency'] for r in detected]

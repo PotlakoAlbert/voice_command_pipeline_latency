@@ -1,7 +1,9 @@
 import json, glob, os
 
 def analyze(results_path, mfa_dir, name):
-    results = json.load(open(results_path))
+    loaded = json.load(open(results_path))
+    # Support both old flat-list format and new {b, arch, threshold, results} format
+    results = loaded['results'] if isinstance(loaded, dict) and 'results' in loaded else loaded
     total_streams = len(results)
     total_hours = total_streams * 6.0 / 3600.0
 
