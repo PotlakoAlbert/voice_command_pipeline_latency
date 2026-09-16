@@ -4,6 +4,7 @@ def analyze(results_path, mfa_dir, name):
     loaded = json.load(open(results_path))
     # Support both old flat-list format and new {b, arch, threshold, results} format
     results = loaded['results'] if isinstance(loaded, dict) and 'results' in loaded else loaded
+
     total_streams = len(results)
     total_hours = total_streams * 6.0 / 3600.0
 
@@ -38,9 +39,11 @@ def analyze(results_path, mfa_dir, name):
     n_early = len(early)
     false_triggers = on_unknown + on_noise
     streaming_error_rate = false_triggers / total_hours if total_hours > 0 else 0
+    n_detected = sum(1 for r in results if r['detection_time'] is not None)
 
     print(f"=== {name} ===")
     print(f"Total streams: {total_streams} ({total_hours:.4f} hours of audio)")
+    print(f"Detected: {n_detected}/{total_streams}")
     print(f"Total early detections: {n_early}")
     if n_early > 0:
         print(f"  On unknown word (false trigger): {on_unknown} ({100*on_unknown/n_early:.1f}%)")
@@ -52,13 +55,33 @@ def analyze(results_path, mfa_dir, name):
     print()
     return {
         "name": name, "total_streams": total_streams, "total_hours": total_hours,
-        "n_early": n_early, "on_unknown": on_unknown, "on_noise": on_noise,
-        "in_gap": in_gap, "missing_mfa": missing_mfa,
+        "n_detected": n_detected, "n_early": n_early, "on_unknown": on_unknown,
+        "on_noise": on_noise, "in_gap": in_gap, "missing_mfa": missing_mfa,
         "false_triggers": false_triggers, "streaming_error_rate": streaming_error_rate,
     }
 
-r1 = analyze("results/crnn_latency_v2.json", "data/mfa_aligned_v2", "CRNN")
-r2 = analyze("results/resnet_latency_v2.json", "data/mfa_aligned_v2", "Dilated ResNet")
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--arch", required=True, choices=["crnn", "dilated_resnet"])
+    ap.add_argument("--b-values", nargs="+", type=float,
+                     default=[0.0, 0.1, 0.2, 0.33, 0.5, 1.0])
+    ap.add_argument("--mfa-dir", default="data/mfa_aligned_v2")
+    ap.add_argument("--output", required=True)
+    args = ap.parse_args()
 
-json.dump({"crnn": r1, "resnet": r2}, open("results/streaming_error_v2.json", "w"), indent=2)
-print("Saved to results/streaming_error_v2.json")
+    all_results = {}
+    for b in args.b_values:
+        if b == 0.0:
+            baseline_name = "resnet" if args.arch == "dilated_resnet" else "crnn"
+            path = f"results/{baseline_name}_latency_v2.json"
+        else:
+            path = f"results/{args.arch}_b{b}_latency.json"
+        if not os.path.exists(path):
+            print(f"Skipping b={b}: {path} not found")
+            continue
+        r = analyze(path, args.mfa_dir, f"{args.arch} b={b}")
+        all_results[str(b)] = r
+
+    json.dump(all_results, open(args.output, "w"), indent=2)
+    print(f"Saved sweep summary to {args.output}")
