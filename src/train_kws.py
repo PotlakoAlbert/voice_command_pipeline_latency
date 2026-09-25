@@ -27,7 +27,7 @@ import torch.nn as nn
 import wandb
 
 from data import get_dataloaders, LABEL_LIST
-from models import CRNN, DilatedResNet, count_parameters
+from models import CRNN, DilatedResNet, RepCNN, count_parameters
 from latency_loss import latency_controlled_loss
 
 
@@ -36,6 +36,8 @@ def build_model(arch, n_mels=40, n_classes=12):
         return CRNN(n_mels=n_mels, n_classes=n_classes, conv_channels=37, gru_hidden=72)
     elif arch == "dilated_resnet":
         return DilatedResNet(n_mels=n_mels, n_classes=n_classes, channels=13)
+    elif arch == "repcnn":
+        return RepCNN(n_mels=n_mels, n_classes=n_classes, c0=48, c1=56, c2=64, n_branches=2)
     else:
         raise ValueError(f"Unknown architecture: {arch}")
 
@@ -97,7 +99,7 @@ def train_one_epoch(model, loader, optimizer, device, b, log_every=100):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arch", required=True, choices=["crnn", "dilated_resnet"])
+    ap.add_argument("--arch", required=True, choices=["crnn", "dilated_resnet", "repcnn"])
     ap.add_argument("--b", type=float, default=0.0,
                      help="Jose et al. latency-control param. b=0.0 -> standard "
                           "cross-entropy baseline. b>0.0 -> latency-controlled "
@@ -192,6 +194,32 @@ def main():
     elapsed = time.time() - start_time
     print(f"\nFinal test accuracy: {test_acc:.2f}%")
     print(f"Total training time: {elapsed:.1f}s")
+
+    # RepCNN: save a fused/deploy checkpoint from the best (not final) weights.
+    # Fusion is one-way (branches are deleted), so this always loads a fresh
+    # instance from the best checkpoint rather than fusing the in-memory model.
+    if args.arch == "repcnn":
+        best_ckpt_path = os.path.join(
+            args.checkpoint_dir, f"{args.arch}_b{args.b}_best.pt"
+        )
+        fused_model = build_model(args.arch, n_classes=len(labels)).to(device)
+        best_state = torch.load(best_ckpt_path, map_location=device)
+        fused_model.load_state_dict(best_state["model_state_dict"])
+        fused_model.switch_to_deploy()
+        fused_params = count_parameters(fused_model)
+        fused_ckpt_path = os.path.join(
+            args.checkpoint_dir, f"{args.arch}_b{args.b}_best_fused.pt"
+        )
+        torch.save({
+            "model_state_dict": fused_model.state_dict(),
+            "arch": args.arch,
+            "b": args.b,
+            "epoch": best_state["epoch"],
+            "val_accuracy": best_state["val_accuracy"],
+            "n_params": fused_params,
+            "fused": True,
+        }, fused_ckpt_path)
+        print(f"Fused deploy checkpoint saved: {fused_ckpt_path} ({fused_params} params)")
 
     results = {
         "arch": args.arch,

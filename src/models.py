@@ -23,6 +23,7 @@ Input shape convention (matches data.py):
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class CRNN(nn.Module):
@@ -184,3 +185,127 @@ if __name__ == "__main__":
     print()
     print("--- Dilated ResNet ---")
     test_dilated_resnet()
+
+class RepConvBlock(nn.Module):
+    """Re-parameterizable Convolutional Block (Kundu et al. 2024).
+    Training: n parallel depthwise conv+BN branches (kernel k) + one
+    depthwise 1x1 conv+BN branch (skip), summed, then ReLU.
+    Inference: all branches algebraically fused into one depthwise
+    conv (same kernel size k), then a clip activation.
+    """
+    def __init__(self, channels, kernel_size, n_branches=2):
+        super().__init__()
+        self.channels = channels
+        self.kernel_size = kernel_size
+        self.n_branches = n_branches
+        self.deployed = False
+
+        pad = kernel_size // 2
+        self.branches = nn.ModuleList([
+            nn.Conv1d(channels, channels, kernel_size, padding=pad, groups=channels)
+            for _ in range(n_branches)
+        ])
+        self.branch_bns = nn.ModuleList([nn.BatchNorm1d(channels) for _ in range(n_branches)])
+        self.skip_conv = nn.Conv1d(channels, channels, 1, groups=channels)
+        self.skip_bn = nn.BatchNorm1d(channels)
+        self.relu = nn.ReLU()
+
+        # Populated by switch_to_deploy()
+        self.fused_conv = None
+
+    def _fuse_conv_bn(self, conv, bn, target_kernel_size):
+        # BN-fusion identity: W_k = (alpha/sigma) * w_k, W_b = beta - (alpha*mu/sigma)
+        std = (bn.running_var + bn.eps).sqrt()
+        scale = bn.weight / std
+        fused_weight = conv.weight * scale.reshape(-1, 1, 1)  # depthwise: (C,1,k)
+        fused_bias = bn.bias - bn.running_mean * scale
+        if conv.kernel_size[0] != target_kernel_size:
+            # zero-pad the 1x1 skip kernel to target size, weight at center tap
+            pad_total = target_kernel_size - conv.kernel_size[0]
+            left = pad_total // 2
+            right = pad_total - left
+            fused_weight = F.pad(fused_weight, (left, right))
+        return fused_weight, fused_bias
+
+    def switch_to_deploy(self):
+        k = self.kernel_size
+        weight_sum = 0.0
+        bias_sum = 0.0
+        for conv, bn in zip(self.branches, self.branch_bns):
+            w, b = self._fuse_conv_bn(conv, bn, k)
+            weight_sum = weight_sum + w
+            bias_sum = bias_sum + b
+        w_skip, b_skip = self._fuse_conv_bn(self.skip_conv, self.skip_bn, k)
+        weight_sum = weight_sum + w_skip
+        bias_sum = bias_sum + b_skip
+
+        self.fused_conv = nn.Conv1d(self.channels, self.channels, k,
+                                     padding=k // 2, groups=self.channels)
+        with torch.no_grad():
+            self.fused_conv.weight.copy_(weight_sum)
+            self.fused_conv.bias.copy_(bias_sum)
+        self.deployed = True
+        del self.branches
+        del self.branch_bns
+        del self.skip_conv
+        del self.skip_bn
+
+    def forward(self, x):
+        if self.deployed:
+            return torch.clamp(self.fused_conv(x), min=0.0, max=6.0)  # clip activation
+        out = self.skip_bn(self.skip_conv(x))
+        for conv, bn in zip(self.branches, self.branch_bns):
+            out = out + bn(conv(x))
+        return self.relu(out)
+
+
+class RepCNN(nn.Module):
+    """RepCNN (Kundu et al. 2024) sized to ~19.7K fused params — same
+    budget as DilatedResNet (19.9K) for fair 3-way comparison. Exact
+    Kundu et al. hyperparameters (channel widths) are not published
+    (no code release, no param-count table in the paper); kernel
+    sizes, block structure, and branch count (n=2) ARE taken directly
+    from the paper (Sec 3.3, Table 3 ablation).
+    """
+    def __init__(self, n_mels=40, n_classes=12, c0=48, c1=56, c2=64, n_branches=2):
+        super().__init__()
+        self.stem = nn.Conv1d(n_mels, c0, kernel_size=5, stride=2, padding=2)
+        self.stem_bn = nn.BatchNorm1d(c0)
+        self.relu = nn.ReLU()
+
+        self.block1a = RepConvBlock(c0, kernel_size=5, n_branches=n_branches)
+        self.block1b = RepConvBlock(c0, kernel_size=7, n_branches=n_branches)
+        self.pw1 = nn.Conv1d(c0, c1, kernel_size=1)
+        self.pw1_bn = nn.BatchNorm1d(c1)
+
+        self.block2a = RepConvBlock(c1, kernel_size=11, n_branches=n_branches)
+        self.block2b = RepConvBlock(c1, kernel_size=13, n_branches=n_branches)
+        self.pw2 = nn.Conv1d(c1, c2, kernel_size=1)
+        self.pw2_bn = nn.BatchNorm1d(c2)
+
+        self.classifier = nn.Linear(c2, n_classes)
+
+    def _features(self, x):
+        # x: (batch, n_mels, time)
+        x = self.relu(self.stem_bn(self.stem(x)))
+        x = self.block1a(x)
+        x = self.block1b(x)
+        x = self.relu(self.pw1_bn(self.pw1(x)))
+        x = self.block2a(x)
+        x = self.block2b(x)
+        x = self.relu(self.pw2_bn(self.pw2(x)))
+        return x  # (batch, c2, time')
+
+    def forward(self, x):
+        feats = self._features(x)
+        pooled = feats.mean(dim=2)  # (batch, c2)
+        return self.classifier(pooled)
+
+    def forward_frames(self, x):
+        feats = self._features(x)  # (batch, c2, time')
+        feats = feats.transpose(1, 2)  # (batch, time', c2)
+        return self.classifier(feats)  # (batch, time', n_classes)
+
+    def switch_to_deploy(self):
+        for m in [self.block1a, self.block1b, self.block2a, self.block2b]:
+            m.switch_to_deploy()
