@@ -218,7 +218,7 @@ class RepConvBlock(nn.Module):
         std = (bn.running_var + bn.eps).sqrt()
         scale = bn.weight / std
         fused_weight = conv.weight * scale.reshape(-1, 1, 1)  # depthwise: (C,1,k)
-        fused_bias = bn.bias - bn.running_mean * scale
+        fused_bias = bn.bias - (bn.running_mean - conv.bias) * scale
         if conv.kernel_size[0] != target_kernel_size:
             # zero-pad the 1x1 skip kernel to target size, weight at center tap
             pad_total = target_kernel_size - conv.kernel_size[0]
@@ -227,7 +227,8 @@ class RepConvBlock(nn.Module):
             fused_weight = F.pad(fused_weight, (left, right))
         return fused_weight, fused_bias
 
-    def switch_to_deploy(self):
+    def switch_to_deploy(self, use_clip=False):
+        self.use_clip = use_clip
         k = self.kernel_size
         weight_sum = 0.0
         bias_sum = 0.0
@@ -239,8 +240,9 @@ class RepConvBlock(nn.Module):
         weight_sum = weight_sum + w_skip
         bias_sum = bias_sum + b_skip
 
+        device = self.skip_conv.weight.device
         self.fused_conv = nn.Conv1d(self.channels, self.channels, k,
-                                     padding=k // 2, groups=self.channels)
+                                     padding=k // 2, groups=self.channels).to(device)
         with torch.no_grad():
             self.fused_conv.weight.copy_(weight_sum)
             self.fused_conv.bias.copy_(bias_sum)
@@ -252,7 +254,15 @@ class RepConvBlock(nn.Module):
 
     def forward(self, x):
         if self.deployed:
-            return torch.clamp(self.fused_conv(x), min=0.0, max=6.0)  # clip activation
+            out = self.fused_conv(x)
+            if self.use_clip:
+                # Paper's described inference-time swap (ReLU -> bounded clip),
+                # applied without retraining. At this param budget/data scale
+                # this causes severe detection collapse (see results write-up) —
+                # kept here only to reproduce that documented finding, not used
+                # as the primary deploy path.
+                return torch.clamp(out, min=0.0, max=6.0)
+            return self.relu(out)
         out = self.skip_bn(self.skip_conv(x))
         for conv, bn in zip(self.branches, self.branch_bns):
             out = out + bn(conv(x))
@@ -306,6 +316,6 @@ class RepCNN(nn.Module):
         feats = feats.transpose(1, 2)  # (batch, time', c2)
         return self.classifier(feats)  # (batch, time', n_classes)
 
-    def switch_to_deploy(self):
+    def switch_to_deploy(self, use_clip=False):
         for m in [self.block1a, self.block1b, self.block2a, self.block2b]:
-            m.switch_to_deploy()
+            m.switch_to_deploy(use_clip=use_clip)

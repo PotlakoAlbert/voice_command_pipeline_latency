@@ -63,7 +63,7 @@ def analyze(results_path, mfa_dir, name):
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arch", required=True, choices=["crnn", "dilated_resnet"])
+    ap.add_argument("--arch", required=True, choices=["crnn", "dilated_resnet", "repcnn"])
     ap.add_argument("--b-values", nargs="+", type=float,
                      default=[0.0, 0.1, 0.2, 0.33, 0.5, 1.0])
     ap.add_argument("--mfa-dir", default="data/mfa_aligned_v2")
@@ -73,7 +73,12 @@ if __name__ == "__main__":
     all_results = {}
     for b in args.b_values:
         if b == 0.0:
-            baseline_name = "resnet" if args.arch == "dilated_resnet" else "crnn"
+            if args.arch == "dilated_resnet":
+                baseline_name = "resnet"
+            elif args.arch == "repcnn":
+                baseline_name = "repcnn"
+            else:
+                baseline_name = "crnn"
             path = f"results/{baseline_name}_latency_v2.json"
         else:
             path = f"results/{args.arch}_b{b}_latency.json"

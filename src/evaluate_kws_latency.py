@@ -2,7 +2,7 @@ import json, torch, torchaudio, numpy as np
 from pathlib import Path
 import sys
 sys.path.insert(0, '/home-mscluster/pledwaba/voice_command_pipeline_latency/src')
-from models import CRNN, DilatedResNet
+from models import CRNN, DilatedResNet, RepCNN
 
 TARGET_LABELS = ["yes","no","up","down","left","right","on","off","stop","go"]
 LABEL_TO_IDX = {label:i for i,label in enumerate(TARGET_LABELS)}
@@ -52,7 +52,7 @@ def sliding_window_detection(model, audio_path, device, keyword_label, threshold
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--arch', choices=['crnn', 'dilated_resnet'], required=True)
+    parser.add_argument('--arch', choices=['crnn', 'dilated_resnet', 'repcnn'], required=True)
     parser.add_argument('--checkpoint', required=True)
     parser.add_argument('--threshold', type=float, default=0.5)
     parser.add_argument('--b', type=float, default=0.0,
@@ -63,8 +63,11 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if args.arch == 'crnn':
         model = CRNN(n_mels=40, n_classes=12, conv_channels=37, gru_hidden=72).to(device)
-    else:
+    elif args.arch == 'dilated_resnet':
         model = DilatedResNet(n_mels=40, n_classes=12).to(device)
+    else:
+        model = RepCNN(n_mels=40, n_classes=12, c0=48, c1=56, c2=64, n_branches=2).to(device)
+        model.switch_to_deploy()  # fused checkpoint has fused_conv weights, not branches
     ckpt = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(ckpt['model_state_dict'])
     model.eval()

@@ -1,0 +1,80 @@
+{
+  "0.0": {
+    "name": "repcnn b=0.0",
+    "total_streams": 1000,
+    "total_hours": 1.6666666666666667,
+    "n_detected": 921,
+    "n_early": 26,
+    "on_unknown": 6,
+    "on_noise": 0,
+    "in_gap": 20,
+    "missing_mfa": 0,
+    "false_triggers": 6,
+    "streaming_error_rate": 3.5999999999999996
+  },
+  "0.1": {
+    "name": "repcnn b=0.1",
+    "total_streams": 1000,
+    "total_hours": 1.6666666666666667,
+    "n_detected": 684,
+    "n_early": 5,
+    "on_unknown": 3,
+    "on_noise": 0,
+    "in_gap": 2,
+    "missing_mfa": 0,
+    "false_triggers": 3,
+    "streaming_error_rate": 1.7999999999999998
+  },
+  "0.2": {
+    "name": "repcnn b=0.2",
+    "total_streams": 1000,
+    "total_hours": 1.6666666666666667,
+    "n_detected": 562,
+    "n_early": 4,
+    "on_unknown": 2,
+    "on_noise": 0,
+    "in_gap": 2,
+    "missing_mfa": 0,
+    "false_triggers": 2,
+    "streaming_error_rate": 1.2
+  },
+  "0.33": {
+    "name": "repcnn b=0.33",
+    "total_streams": 1000,
+    "total_hours": 1.6666666666666667,
+    "n_detected": 592,
+    "n_early": 4,
+    "on_unknown": 4,
+    "on_noise": 0,
+    "in_gap": 0,
+    "missing_mfa": 0,
+    "false_triggers": 4,
+    "streaming_error_rate": 2.4
+  },
+  "0.5": {
+    "name": "repcnn b=0.5",
+    "total_streams": 1000,
+    "total_hours": 1.6666666666666667,
+    "n_detected": 507,
+    "n_early": 2,
+    "on_unknown": 2,
+    "on_noise": 0,
+    "in_gap": 0,
+    "missing_mfa": 0,
+    "false_triggers": 2,
+    "streaming_error_rate": 1.2
+  },
+  "1.0": {
+    "name": "repcnn b=1.0",
+    "total_streams": 1000,
+    "total_hours": 1.6666666666666667,
+    "n_detected": 573,
+    "n_early": 4,
+    "on_unknown": 3,
+    "on_noise": 1,
+    "in_gap": 0,
+    "missing_mfa": 0,
+    "false_triggers": 4,
+    "streaming_error_rate": 2.4
+  }
+}
