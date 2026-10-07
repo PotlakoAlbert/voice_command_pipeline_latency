@@ -25,9 +25,14 @@ SAMPLE_RATE = 16000
 FIXED_LENGTH = SAMPLE_RATE
 
 
+from endpoint_loss import estimate_endpoint_frame
+
+
 class SpeechCommandsDataset(torch.utils.data.Dataset):
-    def __init__(self, root, subset, n_mels=40, n_fft=480, hop_length=160):
+    def __init__(self, root, subset, n_mels=40, n_fft=480, hop_length=160,
+                 return_endpoint=False):
         self._base = SPEECHCOMMANDS(root=root, download=False, subset=subset)
+        self.return_endpoint = return_endpoint
         self.mel_spec = torchaudio.transforms.MelSpectrogram(
             sample_rate=SAMPLE_RATE,
             n_fft=n_fft,
@@ -72,16 +77,21 @@ class SpeechCommandsDataset(torch.utils.data.Dataset):
             f"Expected {SAMPLE_RATE}Hz, got {sample_rate}Hz"
         )
         waveform = self._fix_length(waveform)
+        end_frame = estimate_endpoint_frame(waveform) if self.return_endpoint else None
         mel = self.mel_spec(waveform)
         feat = self._pcen(mel)
         feat = feat.squeeze(0)
         label_idx = self._remap_label(label)
+        if self.return_endpoint:
+            return feat, label_idx, end_frame
         return feat, label_idx
 
 
-def get_dataloaders(root, batch_size=128, num_workers=2, n_mels=40):
+def get_dataloaders(root, batch_size=128, num_workers=2, n_mels=40,
+                    return_endpoint=False):
     root = os.path.expanduser(root)
-    train_ds = SpeechCommandsDataset(root, subset="training", n_mels=n_mels)
+    train_ds = SpeechCommandsDataset(root, subset="training", n_mels=n_mels,
+                                     return_endpoint=return_endpoint)
     val_ds = SpeechCommandsDataset(root, subset="validation", n_mels=n_mels)
     test_ds = SpeechCommandsDataset(root, subset="testing", n_mels=n_mels)
 

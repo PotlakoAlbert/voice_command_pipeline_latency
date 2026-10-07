@@ -29,6 +29,9 @@ import wandb
 from data import get_dataloaders, LABEL_LIST
 from models import CRNN, DilatedResNet, RepCNN, count_parameters
 from latency_loss import latency_controlled_loss
+from endpoint_loss import endpoint_masked_loss
+
+N_MEL_FRAMES = 101  # 1 s clip, n_fft=480, hop=160, center=True
 
 
 def build_model(arch, n_mels=40, n_classes=12):
@@ -43,7 +46,7 @@ def build_model(arch, n_mels=40, n_classes=12):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, b=0.0):
+def evaluate(model, loader, device, b=0.0, frame_mode=False):
     """For b=0.0 (baseline): evaluates via the pooled forward() path,
     matching how the model was trained (whole-clip cross-entropy).
 
@@ -57,7 +60,7 @@ def evaluate(model, loader, device, b=0.0):
     total = 0
     for feat, label in loader:
         feat, label = feat.to(device), label.to(device)
-        if b == 0.0:
+        if b == 0.0 and not frame_mode:
             logits = model(feat)
         else:
             frame_logits = model.forward_frames(feat)  # (batch, time, n_classes)
@@ -68,16 +71,21 @@ def evaluate(model, loader, device, b=0.0):
     return 100.0 * correct / total
 
 
-def train_one_epoch(model, loader, optimizer, device, b, log_every=100):
+def train_one_epoch(model, loader, optimizer, device, b, log_every=100,
+                    loss_type="jose", target_latency=0.0):
     model.train()
     running = 0.0
     epoch_loss_total = 0.0
-    for i, (feat, label) in enumerate(loader, start=1):
-        feat, label = feat.to(device), label.to(device)
+    for i, batch in enumerate(loader, start=1):
+        feat, label = batch[0].to(device), batch[1].to(device)
 
         optimizer.zero_grad(set_to_none=True)
 
-        if b == 0.0:
+        if loss_type == "endpoint":
+            frame_logits = model.forward_frames(feat)
+            loss = endpoint_masked_loss(frame_logits, label, batch[2].to(device),
+                                        N_MEL_FRAMES, target_latency)
+        elif b == 0.0:
             logits = model(feat)
             loss = nn.functional.cross_entropy(logits, label)
         else:
@@ -104,6 +112,11 @@ def main():
                      help="Jose et al. latency-control param. b=0.0 -> standard "
                           "cross-entropy baseline. b>0.0 -> latency-controlled "
                           "max-pooling loss via forward_frames().")
+    ap.add_argument("--loss", choices=["jose", "endpoint"], default="jose",
+                     help="jose: b-controlled loss (default). endpoint: Fu et al. "
+                          "[2022] endpoint-masking baseline (requires --target-latency).")
+    ap.add_argument("--target-latency", type=float, default=0.0,
+                     help="Fu et al. t_l in seconds after estimated keyword end.")
     ap.add_argument("--data", required=True)
     ap.add_argument("--checkpoint-dir", required=True)
     ap.add_argument("--results-dir", required=True)
@@ -115,6 +128,10 @@ def main():
     ap.add_argument("--num-workers", type=int, default=2)
     ap.add_argument("--no-cuda", action="store_true")
     args = ap.parse_args()
+    endpoint = args.loss == "endpoint"
+    if endpoint and args.b != 0.0:
+        ap.error("--loss endpoint is incompatible with --b > 0")
+    tag = f"ep_tl{args.target_latency}" if endpoint else f"b{args.b}"
 
     use_cuda = (not args.no_cuda) and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
@@ -124,16 +141,18 @@ def main():
 
     os.environ["WANDB_MODE"] = "offline"
     wandb.init(
-        project="voice-kws-phase2" if args.b != 0.0 else "voice-kws-phase1",
-        name=f"{args.arch}_b{args.b}",
+        project="voice-kws-phase2" if (args.b != 0.0 or endpoint) else "voice-kws-phase1",
+        name=f"{args.arch}_{tag}",
         config={
-            "arch": args.arch, "b": args.b, "epochs": args.epochs,
+            "arch": args.arch, "b": args.b, "loss": args.loss,
+            "target_latency": args.target_latency, "epochs": args.epochs,
             "batch_size": args.batch_size, "lr": args.lr, "patience": args.patience,
         },
     )
 
     train_loader, val_loader, test_loader, labels = get_dataloaders(
         root=args.data, batch_size=args.batch_size, num_workers=args.num_workers,
+        return_endpoint=endpoint,
     )
     print(f"Classes ({len(labels)}): {labels}")
     print(f"Train batches: {len(train_loader)} | Val: {len(val_loader)} | Test: {len(test_loader)}")
@@ -155,9 +174,10 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         print(f"\nEpoch {epoch}/{args.epochs}")
-        avg_train_loss = train_one_epoch(model, train_loader, optimizer, device, b=args.b)
+        avg_train_loss = train_one_epoch(model, train_loader, optimizer, device, b=args.b,
+                                         loss_type=args.loss, target_latency=args.target_latency)
 
-        val_acc = evaluate(model, val_loader, device, b=args.b)
+        val_acc = evaluate(model, val_loader, device, b=args.b, frame_mode=endpoint)
         print(f"  val accuracy: {val_acc:.2f}%")
 
         wandb.log({"epoch": epoch, "train_loss": avg_train_loss, "val_accuracy": val_acc})
@@ -168,7 +188,7 @@ def main():
             best_val_acc = val_acc
             epochs_without_improvement = 0
             ckpt_path = os.path.join(
-                args.checkpoint_dir, f"{args.arch}_b{args.b}_best.pt"
+                args.checkpoint_dir, f"{args.arch}_{tag}_best.pt"
             )
             torch.save({
                 "model_state_dict": model.state_dict(),
@@ -190,7 +210,7 @@ def main():
 
     wandb.finish()
 
-    test_acc = evaluate(model, test_loader, device, b=args.b)
+    test_acc = evaluate(model, test_loader, device, b=args.b, frame_mode=endpoint)
     elapsed = time.time() - start_time
     print(f"\nFinal test accuracy: {test_acc:.2f}%")
     print(f"Total training time: {elapsed:.1f}s")
@@ -200,7 +220,7 @@ def main():
     # instance from the best checkpoint rather than fusing the in-memory model.
     if args.arch == "repcnn":
         best_ckpt_path = os.path.join(
-            args.checkpoint_dir, f"{args.arch}_b{args.b}_best.pt"
+            args.checkpoint_dir, f"{args.arch}_{tag}_best.pt"
         )
         fused_model = build_model(args.arch, n_classes=len(labels)).to(device)
         best_state = torch.load(best_ckpt_path, map_location=device)
@@ -208,7 +228,7 @@ def main():
         fused_model.switch_to_deploy()
         fused_params = count_parameters(fused_model)
         fused_ckpt_path = os.path.join(
-            args.checkpoint_dir, f"{args.arch}_b{args.b}_best_fused.pt"
+            args.checkpoint_dir, f"{args.arch}_{tag}_best_fused.pt"
         )
         torch.save({
             "model_state_dict": fused_model.state_dict(),
@@ -224,6 +244,8 @@ def main():
     results = {
         "arch": args.arch,
         "b": args.b,
+        "loss": args.loss,
+        "target_latency": args.target_latency,
         "n_params": n_params,
         "epochs_requested": args.epochs,
         "epochs_run": final_epoch,
@@ -232,7 +254,7 @@ def main():
         "training_time_seconds": elapsed,
         "history": history,
     }
-    results_path = os.path.join(args.results_dir, f"{args.arch}_b{args.b}_results.json")
+    results_path = os.path.join(args.results_dir, f"{args.arch}_{tag}_results.json")
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"Results written to {results_path}")
