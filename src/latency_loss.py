@@ -33,7 +33,7 @@ import torch.nn.functional as F
 NEGATIVE_CLASS_INDICES = (10, 11)
 
 
-def latency_controlled_loss(logits, labels, b=0.0):
+def latency_controlled_loss(logits, labels, b=0.0, negative_indices=None):
     """
     Args:
         logits: (batch, time, n_classes) raw model outputs per frame.
@@ -59,7 +59,8 @@ def latency_controlled_loss(logits, labels, b=0.0):
         class_log_probs = class_log_probs.squeeze(1)
 
     is_negative = torch.zeros(batch, dtype=torch.bool, device=device)
-    for neg_idx in NEGATIVE_CLASS_INDICES:
+    neg_set = NEGATIVE_CLASS_INDICES if negative_indices is None else negative_indices
+    for neg_idx in neg_set:
         is_negative |= (labels == neg_idx)
     is_positive = ~is_negative
 
