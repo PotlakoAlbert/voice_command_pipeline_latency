@@ -52,6 +52,8 @@ def main():
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--out", default="results/mini")
     ap.add_argument("--ckpt-dir", default="checkpoints/mini")
+    ap.add_argument("--no-trail", action="store_true", help="positives have no speech after the keyword (ablation)")
+    ap.add_argument("--mirror-neg", action="store_true", help="with --no-trail: negatives also end in noise-only tails (no shortcut)")
     a = ap.parse_args()
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -64,8 +66,8 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print("params:", n_params, flush=True)
     opt = torch.optim.Adam(model.parameters(), lr=a.lr)
-    train_ds = MiniSegments("train", n=a.n_train, seed=a.seed)
-    val_ds = MiniSegments("val", n=a.n_val, seed=1000)
+    train_ds = MiniSegments("train", n=a.n_train, seed=a.seed, trail=not a.no_trail, mirror=a.mirror_neg)
+    val_ds = MiniSegments("val", n=a.n_val, seed=1000, trail=not a.no_trail, mirror=a.mirror_neg)
     os.makedirs(a.out, exist_ok=True); os.makedirs(a.ckpt_dir, exist_ok=True)
     ck = os.path.join(a.ckpt_dir, tag + "_best.pt")
 
@@ -98,9 +100,9 @@ def main():
                 break
 
     model.load_state_dict(torch.load(ck, map_location=dev)["model_state_dict"])
-    pos_p, _, ks, ke = collect(model, feats, MiniSegments("test", n=a.n_pos, seed=2000, pos_frac=1.0),
+    pos_p, _, ks, ke = collect(model, feats, MiniSegments("test", n=a.n_pos, seed=2000, pos_frac=1.0, trail=not a.no_trail, mirror=a.mirror_neg),
                                dev, 64, a.num_workers)
-    neg_p, _, _, _ = collect(model, feats, MiniSegments("test", n=a.n_neg, seed=3000, pos_frac=0.0),
+    neg_p, _, _, _ = collect(model, feats, MiniSegments("test", n=a.n_neg, seed=3000, pos_frac=0.0, mirror=a.mirror_neg),
                              dev, 64, a.num_workers)
     np.savez_compressed(os.path.join(a.out, tag + ".npz"), pos_p=pos_p, pos_ks=ks, pos_ke=ke, neg_p=neg_p)
     with open(os.path.join(a.out, tag + ".json"), "w") as f:

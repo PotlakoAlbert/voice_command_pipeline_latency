@@ -69,7 +69,7 @@ class MiniData:
             track[t:t + len(w)] += w * 10 ** (rng.uniform(-6.0, 3.0) / 20)
             t += len(w) + gap
 
-    def make_segment(self, rng, positive):
+    def make_segment(self, rng, positive, trail=True, mirror=False):
         track = np.zeros(SEG, dtype=np.float32)
         if positive:
             kw = self.word(rng, True) * 10 ** (rng.uniform(-3.0, 3.0) / 20)
@@ -77,7 +77,14 @@ class MiniData:
             ke = ks + len(kw)
             track[ks:ke] += kw
             self.fill(rng, track, 0, ks - int(0.1 * SR))
-            self.fill(rng, track, ke + int(0.1 * SR), SEG)
+            if trail:
+                self.fill(rng, track, ke + int(0.1 * SR), SEG)
+        elif mirror:
+            w = self.word(rng, False) * 10 ** (rng.uniform(-3.0, 3.0) / 20)
+            ws = int(rng.uniform(1.5, 2.5) * SR)
+            track[ws:ws + len(w)] += w
+            self.fill(rng, track, 0, ws - int(0.1 * SR))
+            ks = ke = -1
         else:
             ks = ke = -1
             self.fill(rng, track, 0, SEG)
@@ -92,8 +99,10 @@ class MiniData:
 
 
 class MiniSegments(torch.utils.data.Dataset):
-    def __init__(self, split, n=20000, seed=0, pos_frac=0.5):
+    def __init__(self, split, n=20000, seed=0, pos_frac=0.5, trail=True, mirror=False):
         self.m = MiniData(split)
+        self.trail = trail
+        self.mirror = mirror
         self.n, self.seed, self.pos_frac, self.epoch = n, seed, pos_frac, 0
 
     def set_epoch(self, e):
@@ -105,7 +114,7 @@ class MiniSegments(torch.utils.data.Dataset):
     def __getitem__(self, i):
         rng = np.random.default_rng([self.seed, self.epoch, i])
         positive = rng.random() < self.pos_frac
-        wav, ks, ke = self.m.make_segment(rng, positive)
+        wav, ks, ke = self.m.make_segment(rng, positive, self.trail, self.mirror)
         return torch.from_numpy(wav), int(positive), ks, ke
 
 
