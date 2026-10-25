@@ -80,6 +80,7 @@ def main():
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--out", default="results/mini_frame")
     ap.add_argument("--ckpt-dir", default="checkpoints/mini_frame")
+    ap.add_argument("--shift-ms", type=float, default=None, help="scale the Bernoulli shift to this many ms of output time (default: 1 frame)")
     a = ap.parse_args()
     if a.pooled_ce and a.b != 0.0:
         ap.error("--pooled-ce requires --b 0.0")
@@ -90,6 +91,8 @@ def main():
     print(f"{tag} | pooled_ce={a.pooled_ce} | device {dev} | torch {torch.__version__}", flush=True)
     mel = torchaudio.transforms.MelSpectrogram(sample_rate=SR, n_fft=480, hop_length=160, n_mels=40).to(dev)
     model = build(a.arch).to(dev)
+    shift = 1 if a.shift_ms is None else max(1, round(a.shift_ms / (20.0 if a.arch == "repcnn" else 10.0)))
+    print("shift frames:", shift, flush=True)
     n_params = sum(p.numel() for p in model.parameters())
     print("params:", n_params, flush=True)
     opt = torch.optim.Adam(model.parameters(), lr=a.lr)
@@ -109,7 +112,7 @@ def main():
             if a.pooled_ce:
                 loss = F.cross_entropy(model(f), lab)
             else:
-                loss = latency_controlled_loss(model.forward_frames(f), lab, b=a.b, negative_indices=(0,))
+                loss = latency_controlled_loss(model.forward_frames(f), lab, b=a.b, negative_indices=(0,), shift=shift)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()

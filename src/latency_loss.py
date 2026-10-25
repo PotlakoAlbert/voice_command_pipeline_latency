@@ -33,7 +33,7 @@ import torch.nn.functional as F
 NEGATIVE_CLASS_INDICES = (10, 11)
 
 
-def latency_controlled_loss(logits, labels, b=0.0, negative_indices=None):
+def latency_controlled_loss(logits, labels, b=0.0, negative_indices=None, shift=1):
     """
     Args:
         logits: (batch, time, n_classes) raw model outputs per frame.
@@ -69,7 +69,7 @@ def latency_controlled_loss(logits, labels, b=0.0, negative_indices=None):
 
     # Bernoulli shift, only applied where relevant (positives)
     beta = torch.bernoulli(torch.full((batch,), float(b), device=device)).long()
-    t_pos = torch.clamp(t_max - beta, min=0)
+    t_pos = torch.clamp(t_max - beta * shift, min=0)
 
     # Select final frame index per example: negatives use t_min, positives use t_pos
     t = torch.where(is_negative, t_min, t_pos)

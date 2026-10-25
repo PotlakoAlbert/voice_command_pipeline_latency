@@ -5,7 +5,9 @@ import torch
 from torch.utils.data import DataLoader
 sys.path.insert(0, "src")
 from latency_loss import latency_controlled_loss
-from mini_data import MiniSegments, WindowFeats, window_logits
+from mini_data import MiniSegments, WindowFeats, window_logits, window_logits_frames
+
+WL = window_logits
 from models import CRNN, DilatedResNet, RepCNN
 
 
@@ -30,7 +32,7 @@ def collect(model, feats, ds, dev, bs, nw):
     dl = DataLoader(ds, batch_size=bs, shuffle=False, num_workers=nw)
     P, L, KS, KE = [], [], [], []
     for wav, lab, ks, ke in dl:
-        lg = window_logits(model, feats, wav.to(dev))
+        lg = WL(model, feats, wav.to(dev))
         P.append(torch.softmax(lg, -1)[..., 1].cpu().numpy())
         L.append(lab.numpy()); KS.append(ks.numpy()); KE.append(ke.numpy())
     return np.concatenate(P), np.concatenate(L), np.concatenate(KS), np.concatenate(KE)
@@ -52,9 +54,12 @@ def main():
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--out", default="results/mini")
     ap.add_argument("--ckpt-dir", default="checkpoints/mini")
+    ap.add_argument("--readout", choices=["pooled", "frames"], default="pooled", help="window score: model forward() (default) or max over forward_frames() logits")
     ap.add_argument("--no-trail", action="store_true", help="positives have no speech after the keyword (ablation)")
     ap.add_argument("--mirror-neg", action="store_true", help="with --no-trail: negatives also end in noise-only tails (no shortcut)")
     a = ap.parse_args()
+    global WL
+    WL = window_logits_frames if a.readout == "frames" else window_logits
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(a.seed)
@@ -79,7 +84,7 @@ def main():
         for wav, lab, ks, ke in DataLoader(train_ds, batch_size=a.batch_size, shuffle=False,
                                            num_workers=a.num_workers):
             wav, lab = wav.to(dev), lab.to(dev)
-            lg = window_logits(model, feats, wav)
+            lg = WL(model, feats, wav)
             loss = latency_controlled_loss(lg, lab, b=a.b, negative_indices=(0,))
             opt.zero_grad(set_to_none=True)
             loss.backward()

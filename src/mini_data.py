@@ -147,3 +147,11 @@ def window_logits(model, feats, wav):
     f = feats(wav)
     B, N = f.shape[:2]
     return model(f.reshape(B * N, *f.shape[2:])).reshape(B, N, -1)
+
+
+def window_logits_frames(model, feats, wav):
+    """Window score = max over the model's per-frame logits inside each 1 s window."""
+    f = feats(wav)
+    B, N = f.shape[:2]
+    lg = model.forward_frames(f.reshape(B * N, *f.shape[2:]))      # (B*N, T', C)
+    return lg.max(dim=1)[0].reshape(B, N, -1)
